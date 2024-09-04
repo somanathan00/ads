@@ -154,4 +154,8 @@ if __name__ == '__main__':
     # Start the periodic check in a separate thread
     thread = threading.Thread(target=check_ads_periodically)
     thread.start()
-    app.run(port=int(os.getenv("FLASK_PORT")), debug=True)
+    
+    app.run(host='0.0.0.0', port=8080)
+
+
+
