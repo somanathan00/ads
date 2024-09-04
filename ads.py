@@ -10,9 +10,22 @@ from email.mime.multipart import MIMEMultipart
 from datetime import datetime, timedelta, timezone
 import threading
 import time
+import logging
 
 # Load environment variables
 load_dotenv()
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,  # Set the logging level (DEBUG, INFO, WARNING, ERROR, CRITICAL)
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    handlers=[
+        logging.StreamHandler(),  # Log to console
+        logging.FileHandler("app.log")  # Log to a file named app.log
+    ]
+)
+
+logger = logging.getLogger(__name__)
 
 # Initialize Flask app
 app = Flask(__name__)
@@ -35,8 +48,12 @@ except ValueError:
     firebase_admin.initialize_app(cred)
 
 db = firestore.client()
+@app.route('/')
+def index():
+    return "Welcome to the Ads Service!", 200
 
 def send_payment_link_to_admin(ad_admin_email, payment_link):
+    logger.info(f"Sending payment link to {ad_admin_email}")
     message = MIMEMultipart("alternative")
     message["Subject"] = "Payment Required for Ad Approval"
     message["From"] = SMTP_USERNAME
@@ -51,36 +68,46 @@ def send_payment_link_to_admin(ad_admin_email, payment_link):
     message.attach(part1)
     message.attach(part2)
 
-    with smtplib.SMTP(SMTP_SERVER, SMTP_PORT) as server:
-        server.starttls()
-        server.login(SMTP_USERNAME, SMTP_PASSWORD)
-        server.sendmail(SMTP_USERNAME, ad_admin_email, message.as_string())
+    try:
+        with smtplib.SMTP(SMTP_SERVER, SMTP_PORT) as server:
+            server.starttls()
+            server.login(SMTP_USERNAME, SMTP_PASSWORD)
+            server.sendmail(SMTP_USERNAME, ad_admin_email, message.as_string())
+        logger.info(f"Payment link sent successfully to {ad_admin_email}")
+    except Exception as e:
+        logger.error(f"Failed to send payment link to {ad_admin_email}: {e}")
 
 def create_payment_link(ad_title, ad_id):
-    session = stripe.checkout.Session.create(
-        payment_method_types=['card'],
-        line_items=[{
-            'price_data': {
-                'currency': 'usd',
-                'product_data': {
-                    'name': f"Payment for ad: {ad_title}",
+    try:
+        session = stripe.checkout.Session.create(
+            payment_method_types=['card'],
+            line_items=[{
+                'price_data': {
+                    'currency': 'usd',
+                    'product_data': {
+                        'name': f"Payment for ad: {ad_title}",
+                    },
+                    'unit_amount': 1000,  # Amount in cents
                 },
-                'unit_amount': 1000,  # Amount in cents
-            },
-            'quantity': 1,
-        }],
-        mode='payment',
-        success_url='https://example.com/success',  # Replace with your success URL
-        cancel_url='https://example.com/cancel',  # Replace with your cancel URL
-        metadata={
-            'ad_title': ad_title,
-            'ad_id': ad_id,
-        }
-    )
-    return session.url
+                'quantity': 1,
+            }],
+            mode='payment',
+            success_url='https://example.com/success',  # Replace with your success URL
+            cancel_url='https://example.com/cancel',  # Replace with your cancel URL
+            metadata={
+                'ad_title': ad_title,
+                'ad_id': ad_id,
+            }
+        )
+        logger.info(f"Payment link created successfully for ad {ad_title}")
+        return session.url
+    except Exception as e:
+        logger.error(f"Failed to create payment link for ad {ad_title}: {e}")
+        return None
 
 def check_ads_periodically():
     while True:
+        logger.info("Checking ads periodically...")
         now = datetime.now(timezone.utc)
         ads_ref = db.collection('customads')
         query = ads_ref.where('isApproved', '==', False).get()
@@ -93,30 +120,30 @@ def check_ads_periodically():
             last_email_sent = ad_data.get('last_email_sent', None)
 
             if not ad_id or not ad_admin_email:
-                print(f"Missing adUnitId or ad_admin for ad: {ad_title}")
+                logger.warning(f"Missing adUnitId or ad_admin for ad: {ad_title}")
                 continue
 
-            # Check if an email was sent within the last 24 hours
             if last_email_sent:
                 last_email_sent = last_email_sent.replace(tzinfo=timezone.utc)
                 if now - last_email_sent < timedelta(days=1):
-                    print(f"Email already sent recently for ad: {ad_title}")
+                    logger.info(f"Email already sent recently for ad: {ad_title}")
                     continue
 
-            # Create payment link and send email
             payment_link = create_payment_link(ad_title, ad_id)
-            send_payment_link_to_admin(ad_admin_email, payment_link)
-            print(f"Payment link sent to {ad_admin_email} for ad {ad_title}")
+            if payment_link:
+                send_payment_link_to_admin(ad_admin_email, payment_link)
+                logger.info(f"Payment link sent to {ad_admin_email} for ad {ad_title}")
+                ads_ref.document(doc.id).update({
+                    'last_email_sent': now
+                })
+            else:
+                logger.error(f"Failed to create or send payment link for ad {ad_title}")
 
-            # Update Firestore document with the new last_email_sent timestamp
-            ads_ref.document(doc.id).update({
-                'last_email_sent': now
-            })
-
-        time.sleep(300)  # Sleep for 24 hours
+        time.sleep(300)  # Sleep for 5 minutes
 
 @app.route('/webhook', methods=['POST'])
 def stripe_webhook():
+    logger.info("Received Stripe webhook")
     payload = request.get_data(as_text=True)
     sig_header = request.headers.get('Stripe-Signature')
 
@@ -124,14 +151,13 @@ def stripe_webhook():
         event = stripe.Webhook.construct_event(
             payload, sig_header, endpoint_secret
         )
+        logger.info(f"Webhook event type: {event['type']}")
     except ValueError as e:
-        print("Invalid payload")
+        logger.error("Invalid payload")
         return jsonify(success=False), 400
     except stripe.error.SignatureVerificationError as e:
-        print("Invalid signature")
+        logger.error("Invalid signature")
         return jsonify(success=False), 400
-
-    print("Event received:", event)
 
     if event['type'] == 'checkout.session.completed':
         session = event['data']['object']
@@ -146,16 +172,13 @@ def stripe_webhook():
                 'isApproved': True,
                 'status': 'active'
             })
-            print(f"Ad {ad_id} has been approved and activated.")
+            logger.info(f"Ad {ad_id} has been approved and activated.")
 
     return jsonify(success=True)
 
 if __name__ == '__main__':
-    # Start the periodic check in a separate thread
+    logger.info("Starting Flask app and periodic ad checker thread...")
     thread = threading.Thread(target=check_ads_periodically)
     thread.start()
     
     app.run(host='0.0.0.0', port=8080)
-
-
-
