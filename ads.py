@@ -52,15 +52,60 @@ db = firestore.client()
 def index():
     return "Welcome to the Ads Service!", 200
 
-def send_payment_link_to_admin(ad_admin_email, payment_link):
+def send_payment_link_to_admin(ad_admin_email, payment_link,ad_title):
     logger.info(f"Sending payment link to {ad_admin_email}")
     message = MIMEMultipart("alternative")
-    message["Subject"] = "Payment Required for Ad Approval"
+    message["Subject"] = "Action Required: Payment for Ad Approval"
     message["From"] = SMTP_USERNAME
     message["To"] = ad_admin_email
-    
-    text = f"Please complete the payment using the following link to approve your ad:\n{payment_link}"
-    html = f"<p>Please complete the payment using the following link to approve your ad:</p><a href='{payment_link}'>Pay Now</a>"
+
+    text = f"""\
+    Dear Admin,
+
+    We hope this message finds you well.
+
+    We are writing to inform you that the ad with the title "{ad_title}" from MRL has expired. To continue showcasing your ad, we kindly request that you complete the payment for its renewal and approval.
+
+    Please use the following link to make the payment:
+
+    {payment_link}
+
+    Once the payment is completed, your ad will be reviewed and approved for continued display.
+
+    If you have any questions or need further assistance, feel free to contact us.
+
+    Thank you for your prompt attention to this matter.
+
+    Best regards,
+    The MRL Team
+    """
+
+    html = f"""\
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <style>
+        body {{ font-family: Arial, sans-serif; }}
+        .container {{ max-width: 600px; margin: auto; padding: 20px; }}
+        .button {{ display: inline-block; padding: 10px 20px; font-size: 16px; color: #fff; background-color: #007BFF; text-decoration: none; border-radius: 5px; }}
+        .footer {{ margin-top: 20px; font-size: 14px; color: #555; }}
+        </style>
+    </head>
+    <body>
+        <div class="container">
+        <p>Dear Admin,</p>
+        <p>We hope this message finds you well.</p>
+        <p>We are writing to inform you that the ad with the title "<strong>{ad_title}</strong>" from MRL has expired. To continue showcasing your ad, we kindly request that you complete the payment for its renewal and approval.</p>
+        <p>Please use the following link to make the payment:</p>
+        <p><a href="{payment_link}" class="button">Pay Now</a></p>
+        <p>Once the payment is completed, your ad will be reviewed and approved for continued display.</p>
+        <p>If you have any questions or need further assistance, feel free to contact us.</p>
+        <p class="footer">Thank you for your prompt attention to this matter.</p>
+        <p class="footer">Best regards,<br>The MRL Team</p>
+        </div>
+    </body>
+    </html>
+    """
 
     part1 = MIMEText(text, "plain")
     part2 = MIMEText(html, "html")
@@ -131,7 +176,7 @@ def check_ads_periodically():
 
             payment_link = create_payment_link(ad_title, ad_id)
             if payment_link:
-                send_payment_link_to_admin(ad_admin_email, payment_link)
+                send_payment_link_to_admin(ad_admin_email, payment_link,ad_title)
                 logger.info(f"Payment link sent to {ad_admin_email} for ad {ad_title}")
                 ads_ref.document(doc.id).update({
                     'last_email_sent': now
